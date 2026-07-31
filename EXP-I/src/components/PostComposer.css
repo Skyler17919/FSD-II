@@ -1,0 +1,55 @@
+.container {
+  width: 500px;
+  margin: 50px auto;
+  padding: 20px;
+  border-radius: 10px;
+  box-shadow: 0 0 10px gray;
+  display: flex;
+  flex-direction: column;
+  background: rgb(6, 176, 255);
+}
+
+h2 {
+  text-align: center;
+}
+
+label {
+  margin-top: 10px;
+  font-weight: bold;
+}
+
+select,
+textarea,
+button {
+  margin-top: 10px;
+  padding: 10px;
+  font-size: 16px;
+}
+
+textarea {
+  height: 150px;
+  resize: none;
+}
+
+button {
+  background: #191c1f;
+  color: rgb(13, 10, 10);
+  border: none;
+  cursor: pointer;
+  border-radius: 5px;
+}
+
+button:disabled {
+  background: rgb(24, 77, 201);
+  cursor: not-allowed;
+}
+
+.error {
+  color: red;
+  font-weight: bold;
+}
+
+.success {
+  color: green;
+  font-weight: bold;
+}
