@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Simple JWT Auth + Role-Based Posts Demo</title>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<style>
+  body {
+    font-family: system-ui, sans-serif;
+    background: #f4f5f7;
+    margin: 0;
+    display: flex;
+    justify-content: center;
+    padding: 50px 20px;
+  }
+  .card {
+    background: #fff;
+    border-radius: 10px;
+    padding: 32px;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  }
+  .wide { max-width: 640px; }
+  h1 { font-size: 20px; margin-top: 0; }
+  h2 { font-size: 15px; margin: 22px 0 10px; color: #333; }
+  label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; }
+  input, textarea {
+    width: 100%;
+    padding: 9px 10px;
+    margin-bottom: 14px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    box-sizing: border-box;
+    font-size: 14px;
+    font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 60px; }
+  button {
+    padding: 9px 16px;
+    border: none;
+    border-radius: 6px;
+    background: #2563eb;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.full { width: 100%; }
+  button.secondary {
+    background: transparent;
+    border: 1px solid #ccc;
+    color: #333;
+  }
+  button.danger {
+    background: transparent;
+    border: 1px solid #d33;
+    color: #d33;
+  }
+  button.small { padding: 5px 10px; font-size: 12px; }
+  .error { color: #d33; font-size: 13px; margin-bottom: 10px; }
+  .hint { font-size: 12px; color: #777; margin-top: 14px; line-height: 1.6; }
+  code { background: #f0f0f0; padding: 1px 5px; border-radius: 4px; }
+  .top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .badge {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 3px 9px;
+    border-radius: 20px;
+    letter-spacing: 0.03em;
+  }
+  .badge.admin { background: #fef3c7; color: #92400e; }
+  .badge.editor { background: #dbeafe; color: #1e40af; }
+  .badge.viewer { background: #e5e7eb; color: #374151; }
+  .post {
+    border: 1px solid #eee;
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 10px;
+  }
+  .post-title { font-weight: 600; font-size: 14.5px; margin-bottom: 4px; }
+  .post-body { font-size: 13.5px; color: #555; margin-bottom: 10px; white-space: pre-wrap; }
+  .post-actions { display: flex; gap: 8px; }
+  .post-meta { font-size: 11px; color: #999; margin-top: 6px; }
+  .empty { color: #999; font-size: 13.5px; text-align: center; padding: 20px 0; }
+  .perm-note {
+    font-size: 12px;
+    color: #888;
+    background: #f8f8f8;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 14px;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+// ---- hardcoded "database" of users (mock-based, no server) ----
+// Each user has a role. Roles, not usernames, drive what actions are allowed.
+const USERS = {
+  admin:  { password: "admin123",  role: "admin"  },
+  editor: { password: "editor123", role: "editor" },
+  user:   { password: "user123",   role: "viewer" },
+};
+
+// ---- RBAC: what each role is permitted to do ----
+// Checking permissions (not raw role names) here keeps the rest of the
+// app simple: components just ask "can I edit?" without knowing which
+// roles that maps to.
+const ROLE_PERMISSIONS = {
+  admin:  { view: true, create: true, edit: true, delete: true },
+  editor: { view: true, create: true, edit: true, delete: false },
+  viewer: { view: true, create: false, edit: false, delete: false },
+};
+
+function can(role, action) {
+  return !!(ROLE_PERMISSIONS[role] && ROLE_PERMISSIONS[role][action]);
+}
+
+// ---- Base64url encode/decode helpers (JWTs use base64url, not plain base64) ----
+function base64urlEncode(obj) {
+  const json = JSON.stringify(obj);
+  return btoa(json).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function base64urlDecode(str) {
+  str = str.replace(/-/g, "+").replace(/_/g, "/");
+  while (str.length % 4) str += "=";
+  return JSON.parse(atob(str));
+}
+
+// ---- Build a JWT-shaped token: header.payload.signature ----
+// SIMULATED for learning purposes: the "signature" isn't cryptographically
+// generated (no server secret key involved) — it only demonstrates the
+// three-part structure a real JWT has. A real backend would sign this
+// with jsonwebtoken + a secret key, and the role claim would be looked up
+// server-side rather than trusted from the client.
+function generateMockToken(username, role) {
+  const header = { alg: "HS256", typ: "JWT" };
+  const payload = {
+    username,
+    role,
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 15 * 60, // expires in 15 minutes
+  };
+  const encodedHeader = base64urlEncode(header);
+  const encodedPayload = base64urlEncode(payload);
+  const fakeSignature = btoa(encodedHeader + encodedPayload).slice(0, 32);
+  return `${encodedHeader}.${encodedPayload}.${fakeSignature}`;
+}
+
+function decodeToken(token) {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    return { header: base64urlDecode(parts[0]), payload: base64urlDecode(parts[1]) };
+  } catch (e) {
+    return null;
+  }
+}
+
+// A token is only usable here if it has the shape THIS app expects
+// (a role we recognize). This guards against a stale/incompatible token
+// left in localStorage by an earlier version of the demo.
+function isValidSessionToken(token) {
+  const decoded = decodeToken(token);
+  if (!decoded) return false;
+  const { role, username, exp } = decoded.payload || {};
+  if (!role || !ROLE_PERMISSIONS[role]) return false;
+  if (!username) return false;
+  if (!exp || exp < Math.floor(Date.now() / 1000)) return false;
+  return true;
+}
+
+// ---- Seed posts so the list isn't empty on first load ----
+const SEED_POSTS = [
+  { id: 1, title: "Welcome post", body: "This is the first post in the demo feed.", author: "admin" },
+  { id: 2, title: "Editorial guidelines", body: "Editors and Admins can create and edit posts like this one.", author: "editor" },
+];
+
+const POSTS_STORAGE_KEY = "jwt_rbac_demo_posts";
+
+// Posts are persisted to localStorage (not just React state) so they
+// survive logging out and back in as a different role, and survive a
+// page refresh. In a real app this would be a database table instead —
+// the point either way is that "created by" data outlives any single
+// user's session.
+function loadPosts() {
+  try {
+    const saved = localStorage.getItem(POSTS_STORAGE_KEY);
+    if (saved) return JSON.parse(saved);
+  } catch (e) {
+    // fall through to seed data if storage is corrupted/unavailable
+  }
+  return SEED_POSTS;
+}
+
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    const record = USERS[username];
+    if (record && record.password === password) {
+      setError("");
+      onLogin(username, record.role);
+    } else {
+      setError("Invalid username or password.");
+    }
+  }
+
+  return (
+    <div className="card">
+      <h1>Log in</h1>
+      {error && <div className="error">{error}</div>}
+      <form onSubmit={handleSubmit}>
+        <label>Username</label>
+        <input value={username} onChange={(e) => setUsername(e.target.value)} />
+        <label>Password</label>
+        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+        <button className="full" type="submit">Log in</button>
+      </form>
+      <div className="hint">
+        <b>Demo accounts</b><br/>
+        Admin — username <code>admin</code>, password <code>admin123</code> (create, edit, delete, view)<br/>
+        Editor — username <code>editor</code>, password <code>editor123</code> (create, edit, view)<br/>
+        Viewer — username <code>user</code>, password <code>user123</code> (view only)
+      </div>
+    </div>
+  );
+}
+
+function PostForm({ initial, onSave, onCancel }) {
+  const [title, setTitle] = useState(initial?.title || "");
+  const [body, setBody] = useState(initial?.body || "");
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (!title.trim()) return;
+    onSave({ title: title.trim(), body: body.trim() });
+  }
+
+  return (
+    <form onSubmit={handleSubmit} style={{ marginBottom: 16, border: "1px solid #eee", borderRadius: 8, padding: 14 }}>
+      <label>Title</label>
+      <input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
+      <label>Body</label>
+      <textarea value={body} onChange={(e) => setBody(e.target.value)} />
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="submit">{initial ? "Save changes" : "Create post"}</button>
+        <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+function Dashboard({ token, onLogout, posts, onCreate, onEdit, onDelete }) {
+  const decoded = decodeToken(token);
+  const { username, role } = decoded.payload;
+
+  const [showCreate, setShowCreate] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+
+  function handleCreate(data) {
+    onCreate({ id: Date.now(), author: username, ...data });
+    setShowCreate(false);
+  }
+
+  function handleEdit(id, data) {
+    onEdit(id, data);
+    setEditingId(null);
+  }
+
+  function handleDelete(id) {
+    // Defense in depth: re-check permission here too, not just at the button —
+    // a hidden/disabled button in the UI doesn't stop a direct function call.
+    if (!can(role, "delete")) return;
+    onDelete(id);
+  }
+
+  return (
+    <div className="card wide">
+      <div className="top-row">
+        <h1>Posts</h1>
+        <span className={`badge ${role}`}>{role}</span>
+      </div>
+      <div className="perm-note">
+        Logged in as <b>{username}</b>. Your role (<code>{role}</code>) grants:
+        {" "}
+        {Object.entries(ROLE_PERMISSIONS[role])
+          .filter(([, allowed]) => allowed)
+          .map(([action]) => action)
+          .join(", ")}.
+      </div>
+
+      {can(role, "create") && !showCreate && (
+        <button onClick={() => setShowCreate(true)} style={{ marginBottom: 14 }}>+ New post</button>
+      )}
+      {showCreate && (
+        <PostForm onSave={handleCreate} onCancel={() => setShowCreate(false)} />
+      )}
+
+      {posts.length === 0 && <div className="empty">No posts yet.</div>}
+
+      {posts.map((post) =>
+        editingId === post.id ? (
+          <PostForm
+            key={post.id}
+            initial={post}
+            onSave={(data) => handleEdit(post.id, data)}
+            onCancel={() => setEditingId(null)}
+          />
+        ) : (
+          <div className="post" key={post.id}>
+            <div className="post-title">{post.title}</div>
+            <div className="post-body">{post.body}</div>
+            <div className="post-actions">
+              {can(role, "edit") && (
+                <button className="secondary small" onClick={() => setEditingId(post.id)}>Edit</button>
+              )}
+              {can(role, "delete") && (
+                <button className="danger small" onClick={() => handleDelete(post.id)}>Delete</button>
+              )}
+            </div>
+            <div className="post-meta">by {post.author}</div>
+          </div>
+        )
+      )}
+
+      <button className="secondary full" style={{ marginTop: 18 }} onClick={onLogout}>Log out</button>
+    </div>
+  );
+}
+
+const STORAGE_KEY = "jwt_rbac_demo_token"; // distinct from the earlier demo's key, on purpose
+
+function App() {
+  const [token, setToken] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return saved && isValidSessionToken(saved) ? saved : "";
+  });
+
+  const [posts, setPosts] = useState(loadPosts);
+
+  useEffect(() => {
+    if (token) localStorage.setItem(STORAGE_KEY, token);
+    else localStorage.removeItem(STORAGE_KEY);
+  }, [token]);
+
+  // Every change to posts (create/edit/delete, by any role) is written
+  // straight to localStorage, so it's there the next time anyone —
+  // Editor, Admin, or Viewer — loads the app.
+  useEffect(() => {
+    localStorage.setItem(POSTS_STORAGE_KEY, JSON.stringify(posts));
+  }, [posts]);
+
+  function handleLogin(username, role) {
+    setToken(generateMockToken(username, role));
+  }
+
+  function handleLogout() {
+    setToken("");
+  }
+
+  function handleCreatePost(post) {
+    setPosts((prev) => [post, ...prev]);
+  }
+
+  function handleEditPost(id, data) {
+    setPosts((prev) => prev.map((p) => (p.id === id ? { ...p, ...data } : p)));
+  }
+
+  function handleDeletePost(id) {
+    setPosts((prev) => prev.filter((p) => p.id !== id));
+  }
+
+  const decoded = token ? decodeToken(token) : null;
+  const isExpired = decoded && decoded.payload.exp < Math.floor(Date.now() / 1000);
+
+  if (!token || isExpired || !decoded) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
+  return (
+    <Dashboard
+      token={token}
+      onLogout={handleLogout}
+      posts={posts}
+      onCreate={handleCreatePost}
+      onEdit={handleEditPost}
+      onDelete={handleDeletePost}
+    />
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
